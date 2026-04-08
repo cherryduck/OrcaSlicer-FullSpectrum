@@ -1,0 +1,17 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-deps-only:
+        description: Only build dependencies
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-latest
+      build-deps-only: ${{ inputs.build-deps-only }}
+    secrets: inherit
