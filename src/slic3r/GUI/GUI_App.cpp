@@ -13,9 +13,10 @@
 #include "slic3r/GUI/WebPresetDialog.hpp"
 
 #include "slic3r/GUI/SSWCP.hpp"
-#include "slic3r/GUI/WCPDownloadManager.hpp"
+#include "slic3r/GUI/DownloadManager.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Config/Version.hpp"
+#include "libslic3r/MixedFilament.hpp"
 
 // Localization headers: include libslic3r version first so everything in this file
 // uses the slic3r/GUI version (the macros will take precedence over the functions).
@@ -833,7 +834,7 @@ static void generic_exception_handle()
         // and terminate the app so it is at least certain to happen now.
         BOOST_LOG_TRIVIAL(error) << boost::format("std::bad_alloc exception: %1%") % ex.what();
         flush_logs();
-        wxString errmsg = wxString::Format(_L("Snapmaker Orca will terminate because of running out of memory."
+        wxString errmsg = wxString::Format(_L("SnapmakerOrca-FullSpectrum will terminate because of running out of memory."
                                               "It may be a bug. It will be appreciated if you report the issue to our team."));
         wxMessageBox(errmsg + "\n\n" + wxString(ex.what()), _L("Fatal error"), wxOK | wxICON_ERROR);
 
@@ -842,13 +843,13 @@ static void generic_exception_handle()
      } catch (const boost::io::bad_format_string& ex) {
      	BOOST_LOG_TRIVIAL(error) << boost::format("Uncaught exception: %1%") % ex.what();
         	flush_logs();
-        wxString errmsg = _L("Snapmaker Orca will terminate because of a localization error. "
+        wxString errmsg = _L("SnapmakerOrca-FullSpectrum will terminate because of a localization error. "
                              "It will be appreciated if you report the specific scenario this issue happened.");
         wxMessageBox(errmsg + "\n\n" + wxString(ex.what()), _L("Critical error"), wxOK | wxICON_ERROR);
         std::terminate();
         //throw;
     } catch (const std::exception& ex) {
-        wxLogError(format_wxstr(_L("Snapmaker Orca got an unhandled exception: %1%"), ex.what()));
+        wxLogError(format_wxstr(_L("SnapmakerOrca-FullSpectrum got an unhandled exception: %1%"), ex.what()));
         BOOST_LOG_TRIVIAL(error) << boost::format("Uncaught exception: %1%") % ex.what();
         flush_logs();
         throw;
@@ -1133,7 +1134,7 @@ GUI_App::GUI_App()
     , m_imgui(new ImGuiWrapper())
 	, m_removable_drive_manager(std::make_unique<RemovableDriveManager>())
     , m_downloader(std::make_unique<Downloader>())
-    , m_wcp_download_manager(&WCPDownloadManager::getInstance())
+    , m_download_manager(&DownloadManager::getInstance())
 	, m_other_instance_message_handler(std::make_unique<OtherInstanceMessageHandler>())
 {
     StartupProfiler profiler("GUI_App::GUI_App");
@@ -1156,7 +1157,9 @@ GUI_App::GUI_App()
     m_page_http_server.set_request_handler(HttpServer::web_server_handle_request);
     m_page_http_server.start();
     profiler.mark("m_page_http_server.start");
-    
+    BOOST_LOG_TRIVIAL(info) << "[Flutter] Version:" << common::get_flutter_version();
+    BOOST_LOG_TRIVIAL(info) << "[Profile] Version:" << common::get_profile_version();
+    flush_logs();
     m_fltviews.set_app(this);
     profiler.mark("m_fltviews.set_app");
 }
@@ -2020,7 +2023,7 @@ void GUI_App::init_webview_runtime()
 {
     // Check WebView Runtime
     if (!WebView::CheckWebViewRuntime()) {
-        int nRet = wxMessageBox(_L("Snapmaker Orca requires the Microsoft WebView2 Runtime to operate certain features.\nClick Yes to install it now."),
+        int nRet = wxMessageBox(_L("SnapmakerOrca-FullSpectrum requires the Microsoft WebView2 Runtime to operate certain features.\nClick Yes to install it now."),
                                 _L("WebView2 Runtime"), wxYES_NO);
         if (nRet == wxYES) {
             WebView::DownloadAndInstallWebViewRuntime();
@@ -2089,8 +2092,8 @@ void GUI_App::init_app_config()
     std::time_t       t        = std::time(0);
     std::tm *         now_time = std::localtime(&t);
     std::stringstream buf;
-    buf << std::put_time(now_time, "debug_%a_%b_%d_%H_%M_%S_");
-    buf << get_current_pid() << ".log";
+    buf << std::put_time(now_time, "%Y-%m-%d-%H-%M-%S");
+    buf << ".log";
     std::string log_filename = buf.str();
 #if !BBL_RELEASE_TO_PUBLIC
     set_log_path_and_level(log_filename, 5);
@@ -2130,6 +2133,7 @@ void GUI_App::init_app_config()
         }
 #endif // _WIN32
     }
+    MixedFilamentManager::set_auto_generate_enabled(app_config->get_bool("auto_generate_gradients"));
     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
 
 }
@@ -2462,7 +2466,7 @@ bool GUI_App::on_init_inner()
             RichMessageDialog
                 dlg(nullptr,
                     wxString::Format(_L("%s\nDo you want to continue?"), msg),
-                    "Snapmaker Orca", wxICON_QUESTION | wxYES_NO);
+                    "SnapmakerOrca-FullSpectrum", wxICON_QUESTION | wxYES_NO);
             dlg.ShowCheckBox(_L("Remember my choice"));
             if (dlg.ShowModal() != wxID_YES) return false;
 
@@ -2613,6 +2617,8 @@ bool GUI_App::on_init_inner()
                 }
                 if (!skip_this_version || evt.GetInt() != 0) {                    
                     wxString            extmsg = wxString::FromUTF8(version_info.description);
+                    if(!m_updateDialog)
+                        return;
                     m_updateDialog->update_version_info(extmsg, version_info.version_str);
                     if (evt.GetInt() != 0) {
                         m_updateDialog->m_button_skip_version->Hide();
@@ -2632,7 +2638,7 @@ bool GUI_App::on_init_inner()
                 wxString tips = wxString::Format(_L("Click to download new version in default browser: %s"), version_str);
                 DownloadDialog dialog(this->mainframe,
                     tips,
-                    _L("The Snapmaker Orca needs an upgrade"),
+                    _L("SnapmakerOrca-FullSpectrum needs an upgrade"),
                     false,
                     wxCENTER | wxICON_INFORMATION);
                 dialog.SetExtendedMessage(description_text);
@@ -2760,12 +2766,15 @@ bool GUI_App::on_init_inner()
 
     BOOST_LOG_TRIVIAL(info) << "create the main window";
     mainframe = new MainFrame();
-    m_updateDialog = new UpdateVersionDialog(mainframe);
-    m_updateDialog->Hide();
-    m_updateDialog->Bind(EVT_DOWN_URL_PACK, [this](wxCommandEvent& event) {
-        auto downloadUlr = m_updateDialog->getUrl();
-        wxLaunchDefaultBrowser(downloadUlr);
-    });
+    if (!m_updateDialog)
+    {
+        m_updateDialog = new UpdateVersionDialog(mainframe);
+        m_updateDialog->Hide();
+        m_updateDialog->Bind(EVT_DOWN_URL_PACK, [this](wxCommandEvent& event) {
+            auto downloadUlr = m_updateDialog->getUrl();
+            wxLaunchDefaultBrowser(downloadUlr);
+        });
+    }
     profiler.mark("mainframe construction");
 
     // hide settings tabs after first Layout
@@ -2878,7 +2887,7 @@ bool GUI_App::on_init_inner()
         m_config_corrupted = false;
         show_error(nullptr,
                    _u8L(
-                       "The Snapmaker Orca configuration file may be corrupted and cannot be parsed.\nSnapmaker Orca has attempted to recreate the "
+                       "The SnapmakerOrca-FullSpectrum configuration file may be corrupted and cannot be parsed.\nSnapmakerOrca-FullSpectrum has attempted to recreate the "
                        "configuration file.\nPlease note, application settings will be lost, but printer profiles will not be affected."));
     }
 
@@ -3635,6 +3644,15 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
 
     switch_window_pools();
     mainframe = new MainFrame();
+
+    if (!m_updateDialog) {
+        m_updateDialog = new UpdateVersionDialog(mainframe);
+        m_updateDialog->Hide();
+        m_updateDialog->Bind(EVT_DOWN_URL_PACK, [this](wxCommandEvent& event) {
+            auto downloadUlr = m_updateDialog->getUrl();
+            wxLaunchDefaultBrowser(downloadUlr);
+        });
+    }
     if (is_editor())
         // hide settings tabs after first Layout
         mainframe->select_tab(size_t(MainFrame::tp3DEditor));
@@ -4510,7 +4528,7 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
 
     // Version limit
     if (code == HttpErrorVersionLimited) {
-        MessageDialog msg_dlg(nullptr, _L("The version of Snapmaker Orca is too low and needs to be updated to the latest version before it can be used normally"), "", wxAPPLY | wxOK);
+        MessageDialog msg_dlg(nullptr, _L("The version of SnapmakerOrca-FullSpectrum is too low and needs to be updated to the latest version before it can be used normally"), "", wxAPPLY | wxOK);
         if (msg_dlg.ShowModal() == wxOK) {
         }
 
@@ -5002,7 +5020,7 @@ void GUI_App::check_new_version_sf(bool show_tips, bool by_user)
             BOOST_LOG_TRIVIAL(fatal) << "request server soft update data error:" << errorMsg;            
           }
         })
-        .perform_sync();
+        .perform();
 }
 void GUI_App::process_network_msg(std::string dev_id, std::string msg)
 {
@@ -5056,7 +5074,7 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    version_display = Snapmaker_VERSION;
+    version_display = std::string("Snapmaker Orca ") + Snapmaker_VERSION + " / FullSpectrum " + FULLSPECTRUM_VERSION;
     return version_display;
 }
 
@@ -5422,20 +5440,20 @@ void GUI_App::stop_sync_user_preset()
     }
 }
 
-void GUI_App::start_http_server()
-{
-    if (!m_http_server.is_started())
-        m_http_server.start();
-}
-void GUI_App::stop_http_server()
-{
-    m_http_server.stop();
-}
+//void GUI_App::start_http_server()
+//{
+//    if (!m_http_server.is_started())
+//        m_http_server.start();
+//}
+//void GUI_App::stop_http_server()
+//{
+//    m_http_server.stop();
+//}
 
 void GUI_App::start_page_http_server() 
 {
     if (!m_page_http_server.is_started())
-        m_page_http_server;
+        m_page_http_server.start();
 }
 void GUI_App::stop_page_http_server()
 {
@@ -5768,14 +5786,14 @@ bool GUI_App::load_language(wxString language, bool initial)
 
     if (! wxLocale::IsAvailable(language_info->Language)) {
     	// Loading the language dictionary failed.
-    	wxString message = "Switching Snapmaker Orca to language " + language_info->CanonicalName + " failed.";
+        wxString message = "Switching SnapmakerOrca-FullSpectrum to language " + language_info->CanonicalName + " failed.";
 #if !defined(_WIN32) && !defined(__APPLE__)
         // likely some linux system
         message += "\nYou may need to reconfigure the missing locales, likely by running the \"locale-gen\" and \"dpkg-reconfigure locales\" commands.\n";
 #endif
         if (initial)
         	message + "\n\nApplication will close.";
-        wxMessageBox(message, "Snapmaker Orca - Switching language failed", wxOK | wxICON_ERROR);
+        wxMessageBox(message, "SnapmakerOrca-FullSpectrum - Switching language failed", wxOK | wxICON_ERROR);
         if (initial)
 			std::exit(EXIT_FAILURE);
 		else
@@ -6589,9 +6607,9 @@ Downloader* GUI_App::downloader()
     return m_downloader.get();
 }
 
-WCPDownloadManager* GUI_App::wcp_download_manager()
+DownloadManager* GUI_App::download_manager()
 {
-    return m_wcp_download_manager;
+    return m_download_manager;
 }
 
 void GUI_App::load_url(wxString url)
@@ -7086,16 +7104,7 @@ bool GUI_App::config_wizard_startup()
         BOOST_LOG_TRIVIAL(info) << "finished run wizard";
 
         return true;
-    } /*else if (get_app_config()->legacy_datadir()) {
-        // Looks like user has legacy pre-vendorbundle data directory,
-        // explain what this is and run the wizard
-
-        MsgDataLegacy dlg;
-        dlg.ShowModal();
-
-        run_wizard(ConfigWizard::RR_DATA_LEGACY);
-        return true;
-    }*/
+    }
 
     if (isAgree.empty()) 
     {

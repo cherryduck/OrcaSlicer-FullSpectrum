@@ -60,6 +60,9 @@ struct MixedFilament
     // - SameLayerPointillisme: split painted masks in XY on each layer.
     int distribution_mode = int(Simple);
 
+    // Optional Local-Z cap for this mixed row. 0 disables the cap.
+    int local_z_max_sublayers = 0;
+
     // Whether this mixed filament is enabled (available for assignment).
     bool enabled = true;
 
@@ -90,6 +93,7 @@ struct MixedFilament
                gradient_component_weights == rhs.gradient_component_weights &&
                pointillism_all_filaments == rhs.pointillism_all_filaments &&
                distribution_mode == rhs.distribution_mode &&
+               local_z_max_sublayers == rhs.local_z_max_sublayers &&
                enabled      == rhs.enabled &&
                deleted      == rhs.deleted &&
                custom       == rhs.custom &&
@@ -111,6 +115,9 @@ class MixedFilamentManager
 {
 public:
     MixedFilamentManager() = default;
+
+    static void set_auto_generate_enabled(bool enabled);
+    static bool auto_generate_enabled();
 
     // ---- Auto-generation ------------------------------------------------
 
@@ -172,6 +179,18 @@ public:
                                    float        layer_print_z = 0.f,
                                    float        layer_height  = 0.f,
                                    bool         force_height_weighted = false) const;
+    // Resolve the filament ID that should own painted regions on this layer.
+    // Modes that require virtual identity later in G-code generation keep the
+    // original mixed ID; ordinary mixed rows collapse to the current physical
+    // extruder so adjacent same-tool regions can merge.
+    unsigned int effective_painted_region_filament_id(unsigned int filament_id,
+                                                      size_t       num_physical,
+                                                      int          layer_index,
+                                                      float        layer_print_z = 0.f,
+                                                      float        layer_height  = 0.f,
+                                                      float        layer_height_a = 0.f,
+                                                      float        layer_height_b = 0.f,
+                                                      float        base_layer_height = 0.2f) const;
     std::vector<unsigned int> ordered_perimeter_extruders(unsigned int filament_id,
                                                           size_t       num_physical,
                                                           int          layer_index,
