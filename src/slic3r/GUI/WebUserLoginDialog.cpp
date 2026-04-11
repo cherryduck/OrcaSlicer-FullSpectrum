@@ -39,7 +39,7 @@ END_EVENT_TABLE()
 
 int ZUserLogin::web_sequence_id = 20000;
 
-ZUserLogin::ZUserLogin() : wxDialog((wxWindow *) (wxGetApp().mainframe), wxID_ANY, "Snapmaker Orca")
+ZUserLogin::ZUserLogin() : wxDialog((wxWindow *) (wxGetApp().mainframe), wxID_ANY, "SnapmakerOrca-FullSpectrum")
 {
     SetBackgroundColour(*wxWHITE);
     // Url
@@ -283,7 +283,7 @@ void ZUserLogin::OnScriptMessage(wxWebViewEvent &evt)
         }
         else if (strCmd == "get_localhost_url") {
             BOOST_LOG_TRIVIAL(info) << "thirdparty_login: get_localhost_url";
-            wxGetApp().start_http_server();
+            //wxGetApp().start_http_server();
             std::string sequence_id = j["sequence_id"].get<std::string>();
             CallAfter([this, sequence_id] {
                 json ack_j;

@@ -2,6 +2,7 @@
 #include "filament_mixer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <boost/log/trivial.hpp>
 #include <cctype>
 #include <cmath>
@@ -14,6 +15,12 @@
 #include <unordered_set>
 
 namespace Slic3r {
+
+namespace {
+
+std::atomic_bool s_mixed_filament_auto_generate_enabled { true };
+
+} // namespace
 
 static uint64_t canonical_pair_key(unsigned int a, unsigned int b)
 {
@@ -344,6 +351,7 @@ static bool parse_row_definition(const std::string &row,
                                  std::string       &gradient_component_weights,
                                  std::string       &manual_pattern,
                                  int               &distribution_mode,
+                                 int               &local_z_max_sublayers,
                                  bool              &deleted)
 {
     auto trim_copy = [](const std::string &s) {
@@ -427,6 +435,7 @@ static bool parse_row_definition(const std::string &row,
     gradient_component_weights.clear();
     manual_pattern.clear();
     distribution_mode = int(MixedFilament::Simple);
+    local_z_max_sublayers = 0;
     deleted = false;
 
     size_t token_idx = 5;
@@ -467,6 +476,12 @@ static bool parse_row_definition(const std::string &row,
             int parsed_mode = distribution_mode;
             if (parse_int_token(tok.substr(1), parsed_mode))
                 distribution_mode = clamp_int(parsed_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple));
+            continue;
+        }
+        if (tok[0] == 'z' || tok[0] == 'Z') {
+            int parsed_max_sublayers = local_z_max_sublayers;
+            if (parse_int_token(tok.substr(1), parsed_max_sublayers))
+                local_z_max_sublayers = std::max(0, parsed_max_sublayers);
             continue;
         }
         if (tok[0] == 'd' || tok[0] == 'D') {
@@ -813,6 +828,16 @@ uint64_t MixedFilamentManager::normalize_stable_id(uint64_t stable_id)
     return stable_id;
 }
 
+void MixedFilamentManager::set_auto_generate_enabled(bool enabled)
+{
+    s_mixed_filament_auto_generate_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool MixedFilamentManager::auto_generate_enabled()
+{
+    return s_mixed_filament_auto_generate_enabled.load(std::memory_order_relaxed);
+}
+
 void MixedFilamentManager::auto_generate(const std::vector<std::string> &filament_colours)
 {
     // Keep a copy of the old list so we can preserve user-modified ratios and
@@ -821,8 +846,6 @@ void MixedFilamentManager::auto_generate(const std::vector<std::string> &filamen
     m_mixed.clear();
 
     const size_t n = filament_colours.size();
-    if (n < 2)
-        return;
 
     std::vector<MixedFilament> custom_rows;
     custom_rows.reserve(old.size());
@@ -838,6 +861,13 @@ void MixedFilamentManager::auto_generate(const std::vector<std::string> &filamen
         MixedFilament custom = prev;
         custom.stable_id = normalize_stable_id(custom.stable_id);
         custom_rows.push_back(std::move(custom));
+    }
+
+    if (n < 2 || !auto_generate_enabled()) {
+        for (MixedFilament &mf : custom_rows)
+            m_mixed.push_back(std::move(mf));
+        refresh_display_colors(filament_colours);
+        return;
     }
 
     // Generate all C(N,2) pairwise combinations.
@@ -922,6 +952,7 @@ void MixedFilamentManager::add_custom_filament(unsigned int component_a,
     mf.gradient_component_weights.clear();
     mf.pointillism_all_filaments = false;
     mf.distribution_mode = int(MixedFilament::Simple);
+    mf.local_z_max_sublayers = 0;
     mf.enabled = true;
     mf.deleted = false;
     mf.custom = true;
@@ -1009,6 +1040,7 @@ std::string MixedFilamentManager::serialize_custom_entries()
            << 'g' << normalized_ids << ','
            << 'w' << normalized_weights << ','
            << 'm' << clamp_int(mf.distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple)) << ','
+           << 'z' << std::max(0, mf.local_z_max_sublayers) << ','
            << 'd' << (mf.deleted ? 1 : 0) << ','
            << 'o' << (mf.origin_auto ? 1 : 0) << ','
            << 'u' << mf.stable_id;
@@ -1079,9 +1111,11 @@ void MixedFilamentManager::load_custom_entries(const std::string &serialized, co
         std::string gradient_component_weights;
         std::string manual_pattern;
         int distribution_mode = int(MixedFilament::Simple);
+        int local_z_max_sublayers = 0;
         bool deleted = false;
         if (!parse_row_definition(row, a, b, stable_id, enabled, custom, origin_auto, mix, pointillism_all_filaments,
-                                  gradient_component_ids, gradient_component_weights, manual_pattern, distribution_mode, deleted)) {
+                                  gradient_component_ids, gradient_component_weights, manual_pattern, distribution_mode,
+                                  local_z_max_sublayers, deleted)) {
             ++skipped_rows;
             BOOST_LOG_TRIVIAL(warning) << "MixedFilamentManager::load_custom_entries invalid row format: " << row;
             continue;
@@ -1128,6 +1162,7 @@ void MixedFilamentManager::load_custom_entries(const std::string &serialized, co
                 normalize_gradient_component_weights(gradient_component_weights, mf.gradient_component_ids.size());
             mf.manual_pattern = normalize_manual_pattern(manual_pattern);
             mf.distribution_mode = clamp_int(distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple));
+            mf.local_z_max_sublayers = std::max(0, local_z_max_sublayers);
             mf.mix_b_percent = mf.manual_pattern.empty() ? mix : mix_percent_from_normalized_pattern(mf.manual_pattern);
             mf.deleted = deleted;
             if (mf.deleted)
@@ -1154,6 +1189,7 @@ void MixedFilamentManager::load_custom_entries(const std::string &serialized, co
             normalize_gradient_component_weights(gradient_component_weights, mf.gradient_component_ids.size());
         mf.manual_pattern = normalize_manual_pattern(manual_pattern);
         mf.distribution_mode = clamp_int(distribution_mode, int(MixedFilament::LayerCycle), int(MixedFilament::Simple));
+        mf.local_z_max_sublayers = std::max(0, local_z_max_sublayers);
         if (!mf.manual_pattern.empty())
             mf.mix_b_percent = mix_percent_from_normalized_pattern(mf.manual_pattern);
         mf.enabled = enabled;
@@ -1294,6 +1330,43 @@ unsigned int MixedFilamentManager::resolve_perimeter(unsigned int filament_id,
     }
 
     return resolve(filament_id, num_physical, layer_index, layer_print_z, layer_height, force_height_weighted);
+}
+
+unsigned int MixedFilamentManager::effective_painted_region_filament_id(unsigned int filament_id,
+                                                                        size_t       num_physical,
+                                                                        int          layer_index,
+                                                                        float        layer_print_z,
+                                                                        float        layer_height,
+                                                                        float        layer_height_a,
+                                                                        float        layer_height_b,
+                                                                        float        base_layer_height) const
+{
+    const int mixed_idx = mixed_index_from_filament_id(filament_id, num_physical);
+    if (mixed_idx < 0)
+        return filament_id;
+
+    const MixedFilament &mf = m_mixed[size_t(mixed_idx)];
+    if (mf.distribution_mode == int(MixedFilament::SameLayerPointillisme))
+        return filament_id;
+
+    const std::string normalized_pattern = normalize_manual_pattern(mf.manual_pattern);
+    if (normalized_pattern.find(',') != std::string::npos)
+        return filament_id;
+
+    const bool is_custom_mixed = mf.custom;
+    if (!is_custom_mixed && (layer_height_a > 0.f || layer_height_b > 0.f)) {
+        const float safe_base = std::max<float>(0.01f, base_layer_height);
+        const int ratio_a = std::max(1, int(std::lround((layer_height_a > 0.f ? layer_height_a : safe_base) / safe_base)));
+        const int ratio_b = std::max(1, int(std::lround((layer_height_b > 0.f ? layer_height_b : safe_base) / safe_base)));
+        const int cycle   = ratio_a + ratio_b;
+
+        if (cycle > 0) {
+            const int pos = ((layer_index % cycle) + cycle) % cycle;
+            return pos < ratio_a ? mf.component_a : mf.component_b;
+        }
+    }
+
+    return resolve(filament_id, num_physical, layer_index, layer_print_z, layer_height);
 }
 
 std::vector<unsigned int> MixedFilamentManager::ordered_perimeter_extruders(unsigned int filament_id,
